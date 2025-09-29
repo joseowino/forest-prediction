@@ -1,0 +1,9 @@
+name: env
+channels:
+  - defaults
+dependencies:
+  - python=3.9
+  - jupyterlab
+  - numpy
+  - pandas
+prefix: /home/joe/anaconda3/envs/env
