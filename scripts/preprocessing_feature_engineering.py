@@ -182,38 +182,7 @@ class ForestDataPreprocessor:
         
         return df_eng
     
-    def prepare_features_target(self, df, target_col=None):
-        """
-        Separate features and target variable.
-        
-        Parameters:
-        -----------
-        df : pd.DataFrame
-            Input dataframe
-        target_col : str, optional
-            Name of target column
-            
-        Returns:
-        --------
-        tuple
-            (X, y) features and target
-        """
-        if target_col is None:
-            target_col = df.columns[-1]
-        
-        X = df.drop(columns=[target_col])
-        y = df[target_col]
-        
-        self.feature_names = X.columns.tolist()
-        self.target_name = target_col
-        
-        logger.info(f"Features shape: {X.shape}")
-        logger.info(f"Target shape: {y.shape}")
-        logger.info(f"Target classes: {sorted(y.unique())}")
-        
-        return X, y
-    
-    def scale_features(self, X_train, X_test=None, scaler_type='standard'):
+    def scale_features(self, X_train, X_test, method='standard'):
         """
         Scale numerical features.
         
@@ -221,175 +190,202 @@ class ForestDataPreprocessor:
         -----------
         X_train : pd.DataFrame
             Training features
-        X_test : pd.DataFrame, optional
+        X_test : pd.DataFrame
             Test features
-        scaler_type : str
-            Type of scaler ('standard' or 'robust')
+        method : str
+            Scaling method ('standard' or 'robust')
             
         Returns:
         --------
-        tuple or pd.DataFrame
-            Scaled features
+        tuple
+            Scaled training and test features
         """
-        # Identify numerical columns (exclude binary features)
-        numerical_cols = []
-        for col in X_train.columns:
-            if not (X_train[col].isin([0, 1]).all() and X_train[col].nunique() == 2):
-                numerical_cols.append(col)
-        
-        logger.info(f"Scaling {len(numerical_cols)} numerical features")
-        
-        # Initialize scaler
-        if scaler_type == 'standard':
+        if method == 'standard':
             self.scaler = StandardScaler()
-        elif scaler_type == 'robust':
+        elif method == 'robust':
             self.scaler = RobustScaler()
         else:
-            raise ValueError(f"Unknown scaler type: {scaler_type}")
+            raise ValueError(f"Unknown scaling method: {method}")
         
-        # Scale training data
-        X_train_scaled = X_train.copy()
-        X_train_scaled[numerical_cols] = self.scaler.fit_transform(X_train[numerical_cols])
+        # Identify numerical columns (excluding binary features)
+        numerical_cols = []
+        for col in X_train.columns:
+            if X_train[col].nunique() > 2:  # Not binary
+                numerical_cols.append(col)
         
-        if X_test is not None:
+        if numerical_cols:
+            X_train_scaled = X_train.copy()
             X_test_scaled = X_test.copy()
+            
+            X_train_scaled[numerical_cols] = self.scaler.fit_transform(X_train[numerical_cols])
             X_test_scaled[numerical_cols] = self.scaler.transform(X_test[numerical_cols])
+            
+            logger.info(f"Scaled {len(numerical_cols)} numerical features using {method} scaling")
+            
             return X_train_scaled, X_test_scaled
-        
-        return X_train_scaled
+        else:
+            logger.warning("No numerical features found for scaling")
+            return X_train, X_test
     
-    def get_feature_info(self, X):
+    def prepare_data(self, file_path, target_col=None, test_size=0.2, random_state=42, 
+                     engineer_features=True, scale=False, scaling_method='standard'):
         """
-        Get information about features.
+        Complete data preparation pipeline.
         
         Parameters:
         -----------
-        X : pd.DataFrame
-            Features dataframe
+        file_path : str
+            Path to data file
+        target_col : str, optional
+            Name of target column
+        test_size : float
+            Proportion of data for testing
+        random_state : int
+            Random seed for reproducibility
+        engineer_features : bool
+            Whether to create engineered features
+        scale : bool
+            Whether to scale features
+        scaling_method : str
+            Method for scaling ('standard' or 'robust')
+            
+        Returns:
+        --------
+        tuple
+            X_train, X_test, y_train, y_test
+        """
+        # Load data
+        df = self.load_data(file_path)
+        
+        # Check for missing values
+        if df.isnull().sum().sum() > 0:
+            logger.warning(f"Found {df.isnull().sum().sum()} missing values. Filling with median...")
+            df = df.fillna(df.median())
+        
+        # Engineer features if requested
+        if engineer_features:
+            df = self.create_engineered_features(df)
+        
+        # Identify target
+        if target_col is None:
+            target_col = df.columns[-1]
+        
+        self.target_name = target_col
+        
+        # Split features and target
+        X = df.drop(columns=[target_col])
+        y = df[target_col]
+        
+        self.feature_names = X.columns.tolist()
+        
+        # Split data
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=test_size, random_state=random_state, stratify=y
+        )
+        
+        logger.info(f"Data split: Train={len(X_train)}, Test={len(X_test)}")
+        
+        # Scale if requested
+        if scale:
+            X_train, X_test = self.scale_features(X_train, X_test, method=scaling_method)
+        
+        return X_train, X_test, y_train, y_test
+    
+    def prepare_test_data(self, file_path, engineer_features=True, scale=False):
+        """
+        Prepare test data using the same transformations as training data.
+        
+        Parameters:
+        -----------
+        file_path : str
+            Path to test data file
+        engineer_features : bool
+            Whether to create engineered features
+        scale : bool
+            Whether to scale features
             
         Returns:
         --------
         pd.DataFrame
-            Feature information
+            Prepared test features
         """
-        info_data = []
+        # Load data
+        df = self.load_data(file_path)
         
-        for col in X.columns:
-            info_data.append({
-                'Feature': col,
-                'Type': X[col].dtype,
-                'Unique_Values': X[col].nunique(),
-                'Missing_Values': X[col].isnull().sum(),
-                'Mean': X[col].mean() if pd.api.types.is_numeric_dtype(X[col]) else None,
-                'Std': X[col].std() if pd.api.types.is_numeric_dtype(X[col]) else None
-            })
+        # Check for missing values
+        if df.isnull().sum().sum() > 0:
+            logger.warning(f"Found {df.isnull().sum().sum()} missing values. Filling with median...")
+            df = df.fillna(df.median())
         
-        return pd.DataFrame(info_data)
+        # Engineer features if requested
+        if engineer_features:
+            df = self.create_engineered_features(df)
+        
+        # Remove target if present
+        if self.target_name and self.target_name in df.columns:
+            df = df.drop(columns=[self.target_name])
+        
+        # Ensure all training features are present
+        if self.feature_names:
+            missing_features = set(self.feature_names) - set(df.columns)
+            extra_features = set(df.columns) - set(self.feature_names)
+            
+            if missing_features:
+                logger.warning(f"Missing features in test data: {missing_features}")
+                for feature in missing_features:
+                    df[feature] = 0
+            
+            if extra_features:
+                logger.warning(f"Extra features in test data (will be removed): {extra_features}")
+                df = df[self.feature_names]
+            
+            # Reorder columns to match training data
+            df = df[self.feature_names]
+        
+        # Scale if requested and scaler exists
+        if scale and self.scaler is not None:
+            numerical_cols = []
+            for col in df.columns:
+                if df[col].nunique() > 2:
+                    numerical_cols.append(col)
+            
+            if numerical_cols:
+                df[numerical_cols] = self.scaler.transform(df[numerical_cols])
+                logger.info(f"Scaled {len(numerical_cols)} numerical features")
+        
+        return df
 
 
-def preprocess_pipeline(train_path, test_path=None, create_features=True, scale_data=False):
+def main():
     """
-    Complete preprocessing pipeline.
-    
-    Parameters:
-    -----------
-    train_path : str
-        Path to training data
-    test_path : str, optional
-        Path to test data
-    create_features : bool
-        Whether to create engineered features
-    scale_data : bool
-        Whether to scale features
-        
-    Returns:
-    --------
-    dict
-        Dictionary containing processed data and metadata
+    Example usage of the preprocessor.
     """
+    # Initialize preprocessor
     preprocessor = ForestDataPreprocessor()
     
-    # Load training data
-    logger.info("Loading training data...")
-    train_df = preprocessor.load_data(train_path)
+    # Prepare training data
+    data_path = '../data/train.csv'
     
-    # Create engineered features
-    if create_features:
-        logger.info("Creating engineered features...")
-        train_df = preprocessor.create_engineered_features(train_df)
-    
-    # Prepare features and target
-    X_train, y_train = preprocessor.prepare_features_target(train_df)
-    
-    # Process test data if provided
-    X_test, y_test = None, None
-    if test_path and os.path.exists(test_path):
-        logger.info("Loading test data...")
-        test_df = preprocessor.load_data(test_path)
+    if os.path.exists(data_path):
+        X_train, X_test, y_train, y_test = preprocessor.prepare_data(
+            data_path,
+            engineer_features=True,
+            scale=False,  # We'll scale separately for different models
+            test_size=0.2,
+            random_state=42
+        )
         
-        if create_features:
-            logger.info("Creating engineered features for test data...")
-            test_df = preprocessor.create_engineered_features(test_df)
+        logger.info(f"\nFinal dataset shapes:")
+        logger.info(f"X_train: {X_train.shape}")
+        logger.info(f"X_test: {X_test.shape}")
+        logger.info(f"y_train: {y_train.shape}")
+        logger.info(f"y_test: {y_test.shape}")
         
-        X_test, y_test = preprocessor.prepare_features_target(test_df, 
-                                                               target_col=preprocessor.target_name)
-    
-    # Scale features if requested
-    if scale_data:
-        logger.info("Scaling features...")
-        if X_test is not None:
-            X_train, X_test = preprocessor.scale_features(X_train, X_test)
-        else:
-            X_train = preprocessor.scale_features(X_train)
-    
-    result = {
-        'X_train': X_train,
-        'y_train': y_train,
-        'X_test': X_test,
-        'y_test': y_test,
-        'preprocessor': preprocessor,
-        'feature_names': preprocessor.feature_names
-    }
-    
-    logger.info("Preprocessing pipeline completed successfully")
-    
-    return result
+        logger.info(f"\nTarget distribution in training set:")
+        logger.info(y_train.value_counts().sort_index())
+    else:
+        logger.error(f"Data file not found: {data_path}")
 
 
 if __name__ == "__main__":
-    # Example usage
-    import sys
-    
-    # Paths
-    train_path = "../data/train.csv"
-    test_path = "../data/test.csv"
-    
-    # Run preprocessing
-    try:
-        result = preprocess_pipeline(
-            train_path=train_path,
-            test_path=test_path if os.path.exists(test_path) else None,
-            create_features=True,
-            scale_data=False  # We'll scale separately for different models
-        )
-        
-        print("\n" + "="*50)
-        print("PREPROCESSING SUMMARY")
-        print("="*50)
-        print(f"Training samples: {result['X_train'].shape[0]}")
-        print(f"Number of features: {result['X_train'].shape[1]}")
-        print(f"Number of classes: {result['y_train'].nunique()}")
-        
-        if result['X_test'] is not None:
-            print(f"Test samples: {result['X_test'].shape[0]}")
-        
-        print("\nClass distribution in training data:")
-        print(result['y_train'].value_counts().sort_index())
-        
-        print("\nFeature info (first 10 features):")
-        feature_info = result['preprocessor'].get_feature_info(result['X_train'])
-        print(feature_info.head(10))
-        
-    except Exception as e:
-        logger.error(f"Error in preprocessing: {str(e)}")
-        sys.exit(1)
+    main()
