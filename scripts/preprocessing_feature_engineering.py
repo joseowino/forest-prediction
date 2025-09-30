@@ -1,40 +1,52 @@
 """
-Preprocessing and Feature Engineering Module
-===========================================
+Forest Cover Type Prediction - Preprocessing and Feature Engineering
+====================================================================
 
-This module handles data preprocessing and feature engineering for the forest cover type prediction project.
-It includes functions for loading data, creating new features, and preparing data for model training.
+This module provides functions for loading, preprocessing, and engineering features
+for the forest cover classification project.
+
+Author: Developer 1
+Date: 2025-09-30
 """
 
 import pandas as pd
 import numpy as np
 from sklearn.preprocessing import StandardScaler, RobustScaler
 from sklearn.model_selection import train_test_split
-import logging
+import pickle
 import os
-
-# Set up logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
 
 
 class ForestDataPreprocessor:
     """
-    A comprehensive preprocessor for forest cover type data.
+    A preprocessing pipeline for forest cover classification data.
+    
+    This class handles data loading, feature engineering, and preprocessing
+    for both scaling-sensitive and scale-invariant models.
     """
     
-    def __init__(self):
-        self.scaler = None
-        self.feature_names = None
-        self.target_name = None
-        
-    def load_data(self, file_path):
+    def __init__(self, random_state=42):
         """
-        Load data from CSV file.
+        Initialize the preprocessor.
         
         Parameters:
         -----------
-        file_path : str
+        random_state : int, default=42
+            Random seed for reproducibility
+        """
+        self.random_state = random_state
+        self.scaler = StandardScaler()
+        self.feature_names = None
+        self.original_features = None
+        self.engineered_features = None
+        
+    def load_data(self, filepath):
+        """
+        Load data from CSV file with basic quality checks.
+        
+        Parameters:
+        -----------
+        filepath : str
             Path to the CSV file
             
         Returns:
@@ -42,349 +54,429 @@ class ForestDataPreprocessor:
         pd.DataFrame
             Loaded dataframe
         """
-        try:
-            df = pd.read_csv(file_path)
-            logger.info(f"Data loaded successfully from {file_path}")
-            logger.info(f"Data shape: {df.shape}")
-            return df
-        except FileNotFoundError:
-            logger.error(f"File not found: {file_path}")
-            raise
-        except Exception as e:
-            logger.error(f"Error loading data: {str(e)}")
-            raise
+        print(f"Loading data from {filepath}...")
+        df = pd.read_csv(filepath)
+        
+        print(f"Data shape: {df.shape}")
+        print(f"Missing values: {df.isnull().sum().sum()}")
+        print(f"Duplicate rows: {df.duplicated().sum()}")
+        
+        return df
     
-    def identify_feature_types(self, df, target_col=None):
+    def check_data_quality(self, df):
         """
-        Identify different types of features in the dataset.
+        Perform basic data quality checks.
         
         Parameters:
         -----------
         df : pd.DataFrame
             Input dataframe
-        target_col : str, optional
-            Name of target column. If None, assumes last column is target.
             
         Returns:
         --------
         dict
-            Dictionary containing different feature types
+            Dictionary containing quality metrics
         """
-        if target_col is None:
-            target_col = df.columns[-1]
-            
-        features = df.drop(columns=[target_col])
-        
-        # Identify feature types based on common naming conventions
-        wilderness_cols = [col for col in features.columns if 'Wilderness_Area' in col]
-        soil_cols = [col for col in features.columns if 'Soil_Type' in col]
-        numerical_cols = [col for col in features.columns if col not in wilderness_cols + soil_cols]
-        
-        feature_types = {
-            'numerical': numerical_cols,
-            'wilderness': wilderness_cols,
-            'soil': soil_cols,
-            'target': target_col
+        quality_report = {
+            'shape': df.shape,
+            'missing_values': df.isnull().sum().to_dict(),
+            'duplicates': df.duplicated().sum(),
+            'dtypes': df.dtypes.to_dict(),
+            'memory_usage_mb': df.memory_usage(deep=True).sum() / 1024**2
         }
         
-        logger.info(f"Feature types identified:")
-        logger.info(f"  - Numerical: {len(numerical_cols)} features")
-        logger.info(f"  - Wilderness: {len(wilderness_cols)} features")
-        logger.info(f"  - Soil: {len(soil_cols)} features")
-        logger.info(f"  - Target: {target_col}")
-        
-        return feature_types
+        # Check for any missing values
+        if df.isnull().sum().sum() > 0:
+            print("WARNING: Missing values detected!")
+            print(df.isnull().sum()[df.isnull().sum() > 0])
+        else:
+            print("✓ No missing values detected")
+            
+        return quality_report
     
-    def create_engineered_features(self, df):
+    def engineer_features(self, df):
         """
-        Create engineered features based on domain knowledge.
+        Create engineered features from cartographic variables.
         
         Parameters:
         -----------
         df : pd.DataFrame
-            Input dataframe
+            Input dataframe with original features
             
         Returns:
         --------
         pd.DataFrame
             Dataframe with additional engineered features
         """
-        df_eng = df.copy()
+        print("Engineering features...")
+        df_enhanced = df.copy()
         
-        # 1. Distance to hydrology (Euclidean distance)
-        if 'Horizontal_Distance_To_Hydrology' in df.columns and 'Vertical_Distance_To_Hydrology' in df.columns:
-            df_eng['Distance_To_Hydrology'] = np.sqrt(
-                df['Horizontal_Distance_To_Hydrology']**2 + 
-                df['Vertical_Distance_To_Hydrology']**2
-            )
-            logger.info("Created feature: Distance_To_Hydrology")
+        # 1. Euclidean distance to hydrology
+        # Combines horizontal and vertical distances for true spatial distance
+        df_enhanced['Distance_To_Hydrology'] = np.sqrt(
+            df['Horizontal_Distance_To_Hydrology']**2 + 
+            df['Vertical_Distance_To_Hydrology']**2
+        )
         
-        # 2. Road-Fire distance difference
-        if 'Horizontal_Distance_To_Fire_Points' in df.columns and 'Horizontal_Distance_To_Roadways' in df.columns:
-            df_eng['Fire_Road_Distance_Diff'] = (
-                df['Horizontal_Distance_To_Fire_Points'] - 
-                df['Horizontal_Distance_To_Roadways']
-            )
-            logger.info("Created feature: Fire_Road_Distance_Diff")
+        # 2. Difference between fire points and roadways
+        # May indicate accessibility and fire management
+        df_enhanced['Fire_Road_Distance_Diff'] = (
+            df['Horizontal_Distance_To_Hydrology'] - 
+            df['Horizontal_Distance_To_Roadways']
+        )
         
-        # 3. Mean distance to infrastructure
-        distance_cols = [col for col in df.columns if 'Distance' in col and 'Vertical' not in col]
-        if len(distance_cols) > 1:
-            df_eng['Mean_Distance_To_Infrastructure'] = df[distance_cols].mean(axis=1)
-            logger.info("Created feature: Mean_Distance_To_Infrastructure")
+        # 3. Mean distance to all infrastructure
+        df_enhanced['Mean_Distance_To_Infrastructure'] = df[[
+            'Horizontal_Distance_To_Roadways',
+            'Horizontal_Distance_To_Fire_Points'
+        ]].mean(axis=1)
         
-        # 4. Elevation-based features
-        if 'Elevation' in df.columns:
-            df_eng['Elevation_Squared'] = df['Elevation']**2
-            df_eng['Elevation_Log'] = np.log1p(df['Elevation'])  # log(1+x) to handle potential zeros
-            logger.info("Created features: Elevation_Squared, Elevation_Log")
+        # 4. Elevation-related features
+        # Hillshade at different times captures sun exposure patterns
+        df_enhanced['Mean_Hillshade'] = df[[
+            'Hillshade_9am',
+            'Hillshade_Noon',
+            'Hillshade_3pm'
+        ]].mean(axis=1)
         
-        # 5. Aspect trigonometric transformations (convert circular feature)
-        if 'Aspect' in df.columns:
-            # Convert aspect to radians
-            aspect_rad = df['Aspect'] * np.pi / 180
-            df_eng['Aspect_Sin'] = np.sin(aspect_rad)
-            df_eng['Aspect_Cos'] = np.cos(aspect_rad)
-            logger.info("Created features: Aspect_Sin, Aspect_Cos")
+        # Hillshade variance (terrain complexity indicator)
+        df_enhanced['Hillshade_Variance'] = df[[
+            'Hillshade_9am',
+            'Hillshade_Noon',
+            'Hillshade_3pm'
+        ]].var(axis=1)
         
-        # 6. Slope categories
-        if 'Slope' in df.columns:
-            df_eng['Slope_Category'] = pd.cut(df['Slope'], 
-                                             bins=[0, 10, 20, 30, float('inf')], 
-                                             labels=['Flat', 'Moderate', 'Steep', 'Very_Steep'])
-            # One-hot encode slope categories
-            slope_dummies = pd.get_dummies(df_eng['Slope_Category'], prefix='Slope')
-            df_eng = pd.concat([df_eng, slope_dummies], axis=1)
-            df_eng.drop('Slope_Category', axis=1, inplace=True)
-            logger.info("Created slope category features")
+        # 5. Aspect-related features
+        # Convert aspect to sine and cosine for circular nature
+        aspect_rad = df['Aspect'] * np.pi / 180
+        df_enhanced['Aspect_Sin'] = np.sin(aspect_rad)
+        df_enhanced['Aspect_Cos'] = np.cos(aspect_rad)
         
-        # 7. Hillshade features interaction
-        hillshade_cols = [col for col in df.columns if 'Hillshade' in col]
-        if len(hillshade_cols) > 1:
-            df_eng['Mean_Hillshade'] = df[hillshade_cols].mean(axis=1)
-            df_eng['Hillshade_Range'] = df[hillshade_cols].max(axis=1) - df[hillshade_cols].min(axis=1)
-            logger.info("Created hillshade interaction features")
+        # 6. Slope-Elevation interaction
+        # Steeper slopes at higher elevations may indicate different cover types
+        df_enhanced['Slope_Elevation_Interaction'] = (
+            df['Slope'] * df['Elevation'] / 1000  # Normalize
+        )
         
-        # 8. Wilderness area count
+        # 7. Distance to hydrology relative to elevation
+        # Lower values = closer to water at given elevation
+        df_enhanced['Hydrology_Elevation_Ratio'] = (
+            df_enhanced['Distance_To_Hydrology'] / (df['Elevation'] + 1)
+        )
+        
+        # 8. Wilderness area count (binary features sum)
         wilderness_cols = [col for col in df.columns if 'Wilderness_Area' in col]
         if wilderness_cols:
-            df_eng['Wilderness_Count'] = df[wilderness_cols].sum(axis=1)
-            logger.info("Created feature: Wilderness_Count")
+            df_enhanced['Wilderness_Area_Count'] = df[wilderness_cols].sum(axis=1)
         
-        # 9. Soil type count (in case multiple soil types are possible)
+        # 9. Soil type count
         soil_cols = [col for col in df.columns if 'Soil_Type' in col]
         if soil_cols:
-            df_eng['Soil_Count'] = df[soil_cols].sum(axis=1)
-            logger.info("Created feature: Soil_Count")
+            df_enhanced['Soil_Type_Count'] = df[soil_cols].sum(axis=1)
         
-        new_features = [col for col in df_eng.columns if col not in df.columns]
-        logger.info(f"Total new features created: {len(new_features)}")
+        # 10. North-facing indicator (north-facing slopes often differ)
+        df_enhanced['Is_North_Facing'] = ((df['Aspect'] >= 315) | 
+                                          (df['Aspect'] <= 45)).astype(int)
         
-        return df_eng
+        # 11. South-facing indicator
+        df_enhanced['Is_South_Facing'] = ((df['Aspect'] >= 135) & 
+                                          (df['Aspect'] <= 225)).astype(int)
+        
+        print(f"✓ Created {len(df_enhanced.columns) - len(df.columns)} new features")
+        
+        return df_enhanced
     
-    def scale_features(self, X_train, X_test, method='standard'):
+    def prepare_features_target(self, df, target_col='Cover_Type'):
         """
-        Scale numerical features.
+        Separate features and target variable.
+        
+        Parameters:
+        -----------
+        df : pd.DataFrame
+            Input dataframe
+        target_col : str, default='Cover_Type'
+            Name of the target column
+            
+        Returns:
+        --------
+        X : pd.DataFrame
+            Feature matrix
+        y : pd.Series
+            Target vector
+        """
+        if target_col in df.columns:
+            X = df.drop(columns=[target_col])
+            y = df[target_col]
+            print(f"Features shape: {X.shape}")
+            print(f"Target distribution:\n{y.value_counts().sort_index()}")
+            return X, y
+        else:
+            # Test set without target
+            print(f"Features shape: {df.shape}")
+            return df, None
+    
+    def get_feature_groups(self, X):
+        """
+        Identify different groups of features for selective scaling.
+        
+        Parameters:
+        -----------
+        X : pd.DataFrame
+            Feature matrix
+            
+        Returns:
+        --------
+        dict
+            Dictionary with feature groups
+        """
+        # Continuous features that need scaling
+        continuous_features = [
+            'Elevation', 'Aspect', 'Slope',
+            'Horizontal_Distance_To_Hydrology', 'Vertical_Distance_To_Hydrology',
+            'Horizontal_Distance_To_Roadways', 'Horizontal_Distance_To_Fire_Points',
+            'Hillshade_9am', 'Hillshade_Noon', 'Hillshade_3pm',
+            'Distance_To_Hydrology', 'Fire_Road_Distance_Diff',
+            'Mean_Distance_To_Infrastructure', 'Mean_Hillshade',
+            'Hillshade_Variance', 'Aspect_Sin', 'Aspect_Cos',
+            'Slope_Elevation_Interaction', 'Hydrology_Elevation_Ratio'
+        ]
+        
+        # Binary features (don't need scaling)
+        binary_features = [col for col in X.columns if 
+                          ('Wilderness_Area' in col or 'Soil_Type' in col or
+                           'Is_North_Facing' in col or 'Is_South_Facing' in col)]
+        
+        # Filter to only include features that exist in X
+        continuous_features = [f for f in continuous_features if f in X.columns]
+        
+        return {
+            'continuous': continuous_features,
+            'binary': binary_features
+        }
+    
+    def fit_scaler(self, X_train):
+        """
+        Fit the scaler on training data.
         
         Parameters:
         -----------
         X_train : pd.DataFrame
-            Training features
-        X_test : pd.DataFrame
-            Test features
-        method : str
-            Scaling method ('standard' or 'robust')
-            
-        Returns:
-        --------
-        tuple
-            Scaled training and test features
+            Training feature matrix
         """
-        if method == 'standard':
-            self.scaler = StandardScaler()
-        elif method == 'robust':
-            self.scaler = RobustScaler()
-        else:
-            raise ValueError(f"Unknown scaling method: {method}")
+        feature_groups = self.get_feature_groups(X_train)
+        continuous_features = feature_groups['continuous']
         
-        # Identify numerical columns (excluding binary features)
-        numerical_cols = []
-        for col in X_train.columns:
-            if X_train[col].nunique() > 2:  # Not binary
-                numerical_cols.append(col)
+        if continuous_features:
+            self.scaler.fit(X_train[continuous_features])
+            print(f"✓ Scaler fitted on {len(continuous_features)} continuous features")
         
-        if numerical_cols:
-            X_train_scaled = X_train.copy()
-            X_test_scaled = X_test.copy()
-            
-            X_train_scaled[numerical_cols] = self.scaler.fit_transform(X_train[numerical_cols])
-            X_test_scaled[numerical_cols] = self.scaler.transform(X_test[numerical_cols])
-            
-            logger.info(f"Scaled {len(numerical_cols)} numerical features using {method} scaling")
-            
-            return X_train_scaled, X_test_scaled
-        else:
-            logger.warning("No numerical features found for scaling")
-            return X_train, X_test
-    
-    def prepare_data(self, file_path, target_col=None, test_size=0.2, random_state=42, 
-                     engineer_features=True, scale=False, scaling_method='standard'):
+    def transform_with_scaling(self, X, fit=False):
         """
-        Complete data preparation pipeline.
+        Transform features with scaling (for SVM, KNN, Logistic Regression).
         
         Parameters:
         -----------
-        file_path : str
-            Path to data file
-        target_col : str, optional
-            Name of target column
-        test_size : float
-            Proportion of data for testing
-        random_state : int
-            Random seed for reproducibility
-        engineer_features : bool
-            Whether to create engineered features
-        scale : bool
-            Whether to scale features
-        scaling_method : str
-            Method for scaling ('standard' or 'robust')
-            
-        Returns:
-        --------
-        tuple
-            X_train, X_test, y_train, y_test
-        """
-        # Load data
-        df = self.load_data(file_path)
-        
-        # Check for missing values
-        if df.isnull().sum().sum() > 0:
-            logger.warning(f"Found {df.isnull().sum().sum()} missing values. Filling with median...")
-            df = df.fillna(df.median())
-        
-        # Engineer features if requested
-        if engineer_features:
-            df = self.create_engineered_features(df)
-        
-        # Identify target
-        if target_col is None:
-            target_col = df.columns[-1]
-        
-        self.target_name = target_col
-        
-        # Split features and target
-        X = df.drop(columns=[target_col])
-        y = df[target_col]
-        
-        self.feature_names = X.columns.tolist()
-        
-        # Split data
-        X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=test_size, random_state=random_state, stratify=y
-        )
-        
-        logger.info(f"Data split: Train={len(X_train)}, Test={len(X_test)}")
-        
-        # Scale if requested
-        if scale:
-            X_train, X_test = self.scale_features(X_train, X_test, method=scaling_method)
-        
-        return X_train, X_test, y_train, y_test
-    
-    def prepare_test_data(self, file_path, engineer_features=True, scale=False):
-        """
-        Prepare test data using the same transformations as training data.
-        
-        Parameters:
-        -----------
-        file_path : str
-            Path to test data file
-        engineer_features : bool
-            Whether to create engineered features
-        scale : bool
-            Whether to scale features
+        X : pd.DataFrame
+            Feature matrix
+        fit : bool, default=False
+            Whether to fit the scaler
             
         Returns:
         --------
         pd.DataFrame
-            Prepared test features
+            Scaled feature matrix
         """
-        # Load data
-        df = self.load_data(file_path)
+        X_scaled = X.copy()
+        feature_groups = self.get_feature_groups(X)
+        continuous_features = feature_groups['continuous']
         
-        # Check for missing values
-        if df.isnull().sum().sum() > 0:
-            logger.warning(f"Found {df.isnull().sum().sum()} missing values. Filling with median...")
-            df = df.fillna(df.median())
+        if continuous_features:
+            if fit:
+                X_scaled[continuous_features] = self.scaler.fit_transform(
+                    X[continuous_features]
+                )
+            else:
+                X_scaled[continuous_features] = self.scaler.transform(
+                    X[continuous_features]
+                )
         
-        # Engineer features if requested
-        if engineer_features:
-            df = self.create_engineered_features(df)
+        return X_scaled
+    
+    def transform_without_scaling(self, X):
+        """
+        Return features without scaling (for tree-based models).
         
-        # Remove target if present
-        if self.target_name and self.target_name in df.columns:
-            df = df.drop(columns=[self.target_name])
-        
-        # Ensure all training features are present
-        if self.feature_names:
-            missing_features = set(self.feature_names) - set(df.columns)
-            extra_features = set(df.columns) - set(self.feature_names)
+        Parameters:
+        -----------
+        X : pd.DataFrame
+            Feature matrix
             
-            if missing_features:
-                logger.warning(f"Missing features in test data: {missing_features}")
-                for feature in missing_features:
-                    df[feature] = 0
-            
-            if extra_features:
-                logger.warning(f"Extra features in test data (will be removed): {extra_features}")
-                df = df[self.feature_names]
-            
-            # Reorder columns to match training data
-            df = df[self.feature_names]
+        Returns:
+        --------
+        pd.DataFrame
+            Unscaled feature matrix
+        """
+        return X.copy()
+    
+    def save_preprocessor(self, filepath='results/preprocessor.pkl'):
+        """
+        Save the preprocessor object.
         
-        # Scale if requested and scaler exists
-        if scale and self.scaler is not None:
-            numerical_cols = []
-            for col in df.columns:
-                if df[col].nunique() > 2:
-                    numerical_cols.append(col)
-            
-            if numerical_cols:
-                df[numerical_cols] = self.scaler.transform(df[numerical_cols])
-                logger.info(f"Scaled {len(numerical_cols)} numerical features")
+        Parameters:
+        -----------
+        filepath : str
+            Path to save the preprocessor
+        """
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)
+        with open(filepath, 'wb') as f:
+            pickle.dump(self, f)
+        print(f"✓ Preprocessor saved to {filepath}")
+    
+    @staticmethod
+    def load_preprocessor(filepath='results/preprocessor.pkl'):
+        """
+        Load a saved preprocessor object.
         
-        return df
+        Parameters:
+        -----------
+        filepath : str
+            Path to the saved preprocessor
+            
+        Returns:
+        --------
+        ForestDataPreprocessor
+            Loaded preprocessor object
+        """
+        with open(filepath, 'rb') as f:
+            preprocessor = pickle.load(f)
+        print(f"✓ Preprocessor loaded from {filepath}")
+        return preprocessor
+
+
+def create_train_validation_split(X, y, test_size=0.2, random_state=42):
+    """
+    Create stratified train-validation split.
+    
+    Parameters:
+    -----------
+    X : pd.DataFrame
+        Feature matrix
+    y : pd.Series
+        Target vector
+    test_size : float, default=0.2
+        Proportion of data for validation
+    random_state : int, default=42
+        Random seed
+        
+    Returns:
+    --------
+    X_train, X_val, y_train, y_val
+        Split datasets
+    """
+    X_train, X_val, y_train, y_val = train_test_split(
+        X, y, 
+        test_size=test_size, 
+        random_state=random_state,
+        stratify=y
+    )
+    
+    print(f"Training set size: {X_train.shape}")
+    print(f"Validation set size: {X_val.shape}")
+    print(f"Training set class distribution:\n{y_train.value_counts().sort_index()}")
+    
+    return X_train, X_val, y_train, y_val
 
 
 def main():
     """
-    Example usage of the preprocessor.
+    Main execution function demonstrating the preprocessing pipeline.
     """
+    print("="*70)
+    print("FOREST COVER TYPE CLASSIFICATION - PREPROCESSING PIPELINE")
+    print("="*70)
+    
     # Initialize preprocessor
-    preprocessor = ForestDataPreprocessor()
+    preprocessor = ForestDataPreprocessor(random_state=42)
     
-    # Prepare training data
-    data_path = '../data/train.csv'
+    # Load training data
+    df_train = preprocessor.load_data('data/train.csv')
     
-    if os.path.exists(data_path):
-        X_train, X_test, y_train, y_test = preprocessor.prepare_data(
-            data_path,
-            engineer_features=True,
-            scale=False,  # We'll scale separately for different models
-            test_size=0.2,
-            random_state=42
-        )
-        
-        logger.info(f"\nFinal dataset shapes:")
-        logger.info(f"X_train: {X_train.shape}")
-        logger.info(f"X_test: {X_test.shape}")
-        logger.info(f"y_train: {y_train.shape}")
-        logger.info(f"y_test: {y_test.shape}")
-        
-        logger.info(f"\nTarget distribution in training set:")
-        logger.info(y_train.value_counts().sort_index())
-    else:
-        logger.error(f"Data file not found: {data_path}")
+    # Check data quality
+    print("\n" + "="*70)
+    print("DATA QUALITY CHECK")
+    print("="*70)
+    quality_report = preprocessor.check_data_quality(df_train)
+    
+    # Engineer features
+    print("\n" + "="*70)
+    print("FEATURE ENGINEERING")
+    print("="*70)
+    df_enhanced = preprocessor.engineer_features(df_train)
+    
+    # Prepare features and target
+    print("\n" + "="*70)
+    print("PREPARING FEATURES AND TARGET")
+    print("="*70)
+    X, y = preprocessor.prepare_features_target(df_enhanced)
+    
+    # Create train-validation split
+    print("\n" + "="*70)
+    print("CREATING TRAIN-VALIDATION SPLIT")
+    print("="*70)
+    X_train, X_val, y_train, y_val = create_train_validation_split(X, y)
+    
+    # Prepare scaled and unscaled versions
+    print("\n" + "="*70)
+    print("PREPARING SCALED AND UNSCALED DATASETS")
+    print("="*70)
+    
+    # Fit scaler on training data
+    preprocessor.fit_scaler(X_train)
+    
+    # Create scaled versions (for SVM, KNN, Logistic Regression)
+    X_train_scaled = preprocessor.transform_with_scaling(X_train, fit=False)
+    X_val_scaled = preprocessor.transform_with_scaling(X_val, fit=False)
+    
+    # Unscaled versions (for tree-based models)
+    X_train_unscaled = preprocessor.transform_without_scaling(X_train)
+    X_val_unscaled = preprocessor.transform_without_scaling(X_val)
+    
+    print("✓ Scaled datasets prepared (for SVM, KNN, Logistic Regression)")
+    print("✓ Unscaled datasets prepared (for Random Forest, Gradient Boosting)")
+    
+    # Save preprocessor
+    print("\n" + "="*70)
+    print("SAVING PREPROCESSOR")
+    print("="*70)
+    preprocessor.save_preprocessor()
+    
+    # Save processed datasets
+    os.makedirs('data/processed', exist_ok=True)
+    
+    # Save as pickle for efficient loading
+    datasets = {
+        'X_train_scaled': X_train_scaled,
+        'X_val_scaled': X_val_scaled,
+        'X_train_unscaled': X_train_unscaled,
+        'X_val_unscaled': X_val_unscaled,
+        'y_train': y_train,
+        'y_val': y_val
+    }
+    
+    with open('data/processed/datasets.pkl', 'wb') as f:
+        pickle.dump(datasets, f)
+    
+    print("✓ Processed datasets saved to 'data/processed/datasets.pkl'")
+    
+    # Summary statistics
+    print("\n" + "="*70)
+    print("SUMMARY")
+    print("="*70)
+    print(f"Total features: {X_train.shape[1]}")
+    print(f"Training samples: {X_train.shape[0]}")
+    print(f"Validation samples: {X_val.shape[0]}")
+    print(f"Number of classes: {len(y.unique())}")
+    print("\nPreprocessing pipeline complete! ✓")
 
 
 if __name__ == "__main__":
