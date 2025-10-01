@@ -29,6 +29,9 @@ from sklearn.metrics import accuracy_score, confusion_matrix, classification_rep
 import matplotlib.pyplot as plt
 import seaborn as sns
 
+# Progress bar
+from tqdm import tqdm
+
 warnings.filterwarnings('ignore')
 
 
@@ -204,7 +207,14 @@ class ModelSelector:
         
         models = self.get_model_param_grids()
         
-        for model_name, model_config in models.items():
+        # Create progress bar for models
+        model_progress = tqdm(models.items(), desc="Training Models", 
+                            unit="model", position=0, leave=True)
+        
+        for model_name, model_config in model_progress:
+            # Update progress bar description
+            model_progress.set_description(f"Training {model_name}")
+            
             # Use scaled or unscaled data based on model requirements
             X_train = X_train_scaled if model_config['scaled'] else X_train_unscaled
             
@@ -222,6 +232,9 @@ class ModelSelector:
                 'best_estimator': grid_search.best_estimator_,
                 'scaled': model_config['scaled']
             }
+        
+        # Close progress bar
+        model_progress.close()
         
         # Select best overall model
         self._select_best_model()
@@ -275,7 +288,13 @@ class ModelSelector:
         
         val_scores = {}
         
-        for model_name, result in self.results.items():
+        # Create progress bar for evaluation
+        eval_progress = tqdm(self.results.items(), desc="Evaluating Models", 
+                           unit="model", leave=True)
+        
+        for model_name, result in eval_progress:
+            eval_progress.set_description(f"Evaluating {model_name}")
+            
             X_val = X_val_scaled if result['scaled'] else X_val_unscaled
             model = result['best_estimator']
             
@@ -290,6 +309,7 @@ class ModelSelector:
             
             print(f"{model_name:25s} Validation Score: {val_score:.4f}")
         
+        eval_progress.close()
         return val_scores
     
     def check_overfitting(self, X_train_scaled, X_train_unscaled, y_train):
@@ -316,7 +336,13 @@ class ModelSelector:
         
         analysis = []
         
-        for model_name, result in self.results.items():
+        # Create progress bar for overfitting check
+        overfit_progress = tqdm(self.results.items(), desc="Checking Overfitting", 
+                              unit="model", leave=True)
+        
+        for model_name, result in overfit_progress:
+            overfit_progress.set_description(f"Analyzing {model_name}")
+            
             X_train = X_train_scaled if result['scaled'] else X_train_unscaled
             model = result['best_estimator']
             
@@ -345,6 +371,8 @@ class ModelSelector:
             })
             
             result['train_score'] = train_score
+        
+        overfit_progress.close()
         
         df_analysis = pd.DataFrame(analysis)
         print(df_analysis.to_string(index=False))
@@ -445,6 +473,9 @@ class ModelSelector:
         
         train_sizes = np.linspace(0.1, 1.0, 10)
         
+        # Use tqdm to show progress for learning curve calculation
+        print("Computing learning curve (this may take a few minutes)...")
+        
         train_sizes_abs, train_scores, val_scores = learning_curve(
             model, X, y,
             train_sizes=train_sizes,
@@ -480,6 +511,7 @@ class ModelSelector:
             print(f"✓ Learning curve saved to {save_path}")
         
         plt.show()
+        print("✓ Learning curve generated")
     
     def save_best_model(self, filepath='results/best_model.pkl'):
         """
@@ -560,6 +592,7 @@ def main():
     with open('data/processed/datasets.pkl', 'rb') as f:
         datasets = pickle.load(f)
     
+    # Make writable copies to avoid read-only array issues
     X_train_scaled = datasets['X_train_scaled'].copy()
     X_val_scaled = datasets['X_val_scaled'].copy()
     X_train_unscaled = datasets['X_train_unscaled'].copy()
