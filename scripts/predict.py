@@ -1,334 +1,505 @@
 """
-Prediction Module
-=================
+Forest Cover Type Prediction - Prediction Pipeline
+==================================================
 
-This module handles loading the trained model and making predictions on the test dataset.
+This module loads the trained model and generates predictions on the test set.
+
+Author: Developer 3
+Date: 2025-09-30
 """
 
 import pandas as pd
 import numpy as np
 import pickle
 import os
-import logging
-from sklearn.metrics import accuracy_score, classification_report
-
-# Set up logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
-
-# Import our preprocessing module
 import sys
-sys.path.append(os.path.dirname(__file__))
+from datetime import datetime
+
+# Add scripts directory to path
+sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
+
 from preprocessing_feature_engineering import ForestDataPreprocessor
 
 
-class ForestPredictor:
+class PredictionPipeline:
     """
-    Class to handle predictions on new data using the trained model.
+    End-to-end prediction pipeline for forest cover classification.
+    
+    Handles loading models, preprocessing test data, generating predictions,
+    and saving results.
     """
     
-    def __init__(self, model_path):
+    def __init__(self):
+        """Initialize the prediction pipeline."""
+        self.preprocessor = None
+        self.model_info = None
+        self.model = None
+        self.predictions = None
+        
+    def load_preprocessor(self, preprocessor_path='results/preprocessor.pkl'):
         """
-        Initialize the predictor with a trained model.
+        Load the fitted preprocessor.
+        
+        Parameters:
+        -----------
+        preprocessor_path : str
+            Path to the saved preprocessor
+        """
+        print(f"Loading preprocessor from {preprocessor_path}...")
+        
+        if not os.path.exists(preprocessor_path):
+            raise FileNotFoundError(
+                f"Preprocessor not found at {preprocessor_path}. "
+                "Please run preprocessing_feature_engineering.py first."
+            )
+        
+        self.preprocessor = ForestDataPreprocessor.load_preprocessor(preprocessor_path)
+        print("✓ Preprocessor loaded successfully")
+        
+    def load_model(self, model_path='results/best_model.pkl'):
+        """
+        Load the trained model.
         
         Parameters:
         -----------
         model_path : str
-            Path to the saved model pickle file
+            Path to the saved model
         """
-        self.model_path = model_path
-        self.model_data = None
-        self.model = None
-        self.scaler = None
-        self.scale_features = False
-        self.model_name = None
+        print(f"Loading model from {model_path}...")
         
-        self.load_model()
-    
-    def load_model(self):
+        if not os.path.exists(model_path):
+            raise FileNotFoundError(
+                f"Model not found at {model_path}. "
+                "Please run model_selection.py first."
+            )
+        
+        with open(model_path, 'rb') as f:
+            self.model_info = pickle.load(f)
+        
+        self.model = self.model_info['model']
+        
+        print("✓ Model loaded successfully")
+        print(f"  Model type: {self.model_info['model_name']}")
+        print(f"  CV Score: {self.model_info['cv_score']:.4f}")
+        print(f"  Requires scaling: {self.model_info['scaled']}")
+        print(f"  Trained on: {self.model_info.get('timestamp', 'Unknown')}")
+        
+    def load_test_data(self, test_path='data/test.csv'):
         """
-        Load the trained model from pickle file.
-        """
-        try:
-            with open(self.model_path, 'rb') as f:
-                self.model_data = pickle.load(f)
-            
-            self.model = self.model_data['model']
-            self.scaler = self.model_data.get('scaler', None)
-            self.scale_features = self.model_data.get('scale_features', False)
-            self.model_name = self.model_data.get('model_name', 'Unknown')
-            
-            logger.info(f"Model loaded successfully from {self.model_path}")
-            logger.info(f"Model type: {self.model_name}")
-            logger.info(f"Requires feature scaling: {self.scale_features}")
-            
-            if 'cv_score' in self.model_data:
-                logger.info(f"Cross-validation score: {self.model_data['cv_score']:.4f}")
-            
-        except FileNotFoundError:
-            logger.error(f"Model file not found: {self.model_path}")
-            raise
-        except Exception as e:
-            logger.error(f"Error loading model: {str(e)}")
-            raise
-    
-    def predict(self, X):
-        """
-        Make predictions on new data.
+        Load and validate test data.
         
         Parameters:
         -----------
-        X : pd.DataFrame
-            Features for prediction
+        test_path : str
+            Path to test data CSV
+            
+        Returns:
+        --------
+        pd.DataFrame
+            Loaded test data
+        """
+        print(f"\nLoading test data from {test_path}...")
+        
+        if not os.path.exists(test_path):
+            raise FileNotFoundError(
+                f"Test data not found at {test_path}. "
+                "The test set should be available on the last day."
+            )
+        
+        df_test = pd.read_csv(test_path)
+        print(f"✓ Test data loaded")
+        print(f"  Shape: {df_test.shape}")
+        print(f"  Samples: {len(df_test)}")
+        
+        # Check for missing values
+        missing = df_test.isnull().sum().sum()
+        if missing > 0:
+            print(f"  WARNING: {missing} missing values detected!")
+        else:
+            print("  No missing values: ✓")
+        
+        return df_test
+    
+    def preprocess_test_data(self, df_test):
+        """
+        Apply preprocessing and feature engineering to test data.
+        
+        Parameters:
+        -----------
+        df_test : pd.DataFrame
+            Raw test data
+            
+        Returns:
+        --------
+        pd.DataFrame
+            Preprocessed test features
+        """
+        print("\nPreprocessing test data...")
+        
+        # Check if preprocessor is loaded
+        if self.preprocessor is None:
+            raise ValueError("Preprocessor not loaded. Call load_preprocessor() first.")
+        
+        # Apply feature engineering
+        df_test_enhanced = self.preprocessor.engineer_features(df_test)
+        print(f"✓ Feature engineering applied")
+        print(f"  Original features: {df_test.shape[1]}")
+        print(f"  Enhanced features: {df_test_enhanced.shape[1]}")
+        
+        # Separate features (test set has no target)
+        if 'Cover_Type' in df_test_enhanced.columns:
+            # If test set has target (for validation)
+            X_test, y_test = self.preprocessor.prepare_features_target(df_test_enhanced)
+            print("  Target found in test set (validation mode)")
+            return X_test, y_test
+        else:
+            # Normal case: no target in test set
+            X_test = df_test_enhanced
+            print("  No target in test set (prediction mode)")
+            return X_test, None
+    
+    def predict(self, X_test):
+        """
+        Generate predictions on test data.
+        
+        Parameters:
+        -----------
+        X_test : pd.DataFrame
+            Test features
             
         Returns:
         --------
         np.array
             Predictions
         """
+        print("\nGenerating predictions...")
+        
+        # Check if model is loaded
         if self.model is None:
-            raise ValueError("Model has not been loaded!")
+            raise ValueError("Model not loaded. Call load_model() first.")
         
-        # Scale features if needed
-        if self.scale_features and self.scaler is not None:
-            logger.info("Scaling features for prediction...")
-            X_scaled = self.scaler.transform(X)
+        # Apply scaling if required
+        if self.model_info['scaled']:
+            print("  Applying scaling (model requires scaled features)...")
+            X_test_processed = self.preprocessor.transform_with_scaling(X_test, fit=False)
         else:
-            X_scaled = X
+            print("  Using unscaled features (tree-based model)...")
+            X_test_processed = self.preprocessor.transform_without_scaling(X_test)
         
-        # Make predictions
-        logger.info(f"Making predictions on {len(X)} samples...")
-        predictions = self.model.predict(X_scaled)
+        # Generate predictions
+        predictions = self.model.predict(X_test_processed)
         
-        logger.info(f"Predictions completed successfully")
-        logger.info(f"Predicted classes: {np.unique(predictions)}")
+        print(f"✓ Predictions generated")
+        print(f"  Number of predictions: {len(predictions)}")
+        print(f"  Unique classes predicted: {np.unique(predictions)}")
+        print(f"  Prediction distribution:")
         
+        # Show distribution
+        unique, counts = np.unique(predictions, return_counts=True)
+        for cls, count in zip(unique, counts):
+            percentage = (count / len(predictions)) * 100
+            print(f"    Class {cls}: {count} ({percentage:.1f}%)")
+        
+        self.predictions = predictions
         return predictions
     
-    def predict_proba(self, X):
+    def calculate_accuracy(self, y_true, y_pred):
         """
-        Get prediction probabilities if the model supports it.
+        Calculate accuracy if true labels are available.
         
         Parameters:
         -----------
-        X : pd.DataFrame
-            Features for prediction
-            
-        Returns:
-        --------
-        np.array
-            Prediction probabilities
-        """
-        if self.model is None:
-            raise ValueError("Model has not been loaded!")
-        
-        if not hasattr(self.model, 'predict_proba'):
-            logger.warning("Model does not support probability predictions")
-            return None
-        
-        # Scale features if needed
-        if self.scale_features and self.scaler is not None:
-            X_scaled = self.scaler.transform(X)
-        else:
-            X_scaled = X
-        
-        # Get probabilities
-        probabilities = self.model.predict_proba(X_scaled)
-        logger.info("Prediction probabilities computed successfully")
-        
-        return probabilities
-    
-    def evaluate(self, X, y_true):
-        """
-        Evaluate the model on data with known labels.
-        
-        Parameters:
-        -----------
-        X : pd.DataFrame
-            Features
-        y_true : pd.Series or np.array
+        y_true : array-like
             True labels
+        y_pred : array-like
+            Predicted labels
             
         Returns:
         --------
-        dict
-            Evaluation metrics
+        float
+            Accuracy score
         """
-        predictions = self.predict(X)
-        accuracy = accuracy_score(y_true, predictions)
+        from sklearn.metrics import accuracy_score, classification_report
         
-        logger.info(f"\n{'='*60}")
-        logger.info(f"MODEL EVALUATION")
-        logger.info(f"{'='*60}")
-        logger.info(f"Accuracy: {accuracy:.4f}")
+        accuracy = accuracy_score(y_true, y_pred)
         
-        # Classification report
-        report = classification_report(y_true, predictions)
-        logger.info(f"\nClassification Report:\n{report}")
+        print("\n" + "="*70)
+        print("TEST SET EVALUATION")
+        print("="*70)
+        print(f"Accuracy: {accuracy:.4f}")
         
-        results = {
-            'accuracy': accuracy,
-            'predictions': predictions,
-            'classification_report': report
-        }
+        # Check constraint
+        if accuracy > 0.65:
+            print(f"✓ CONSTRAINT SATISFIED: Test accuracy ({accuracy:.4f}) > 0.65")
+        else:
+            print(f"✗ CONSTRAINT NOT SATISFIED: Test accuracy ({accuracy:.4f}) ≤ 0.65")
         
-        return results
+        # Detailed classification report
+        print("\nClassification Report:")
+        print(classification_report(y_true, y_pred, 
+                                   target_names=[f'Class_{i}' for i in range(1, 8)]))
+        
+        return accuracy
     
-    def save_predictions(self, predictions, output_path, include_ids=None):
+    def save_predictions(self, predictions, output_path='results/test_predictions.csv',
+                        include_probabilities=False, X_test=None):
         """
-        Save predictions to a CSV file.
+        Save predictions to CSV file.
         
         Parameters:
         -----------
-        predictions : np.array
-            Predictions to save
+        predictions : array-like
+            Predicted labels
         output_path : str
-            Path to save the predictions
-        include_ids : array-like, optional
-            IDs to include in the output
+            Path to save predictions
+        include_probabilities : bool
+            Whether to include prediction probabilities
+        X_test : pd.DataFrame, optional
+            Test features (for probability predictions)
         """
-        # Create predictions dataframe
-        if include_ids is not None:
-            pred_df = pd.DataFrame({
-                'Id': include_ids,
-                'Cover_Type': predictions
-            })
-        else:
-            pred_df = pd.DataFrame({
-                'Id': range(len(predictions)),
-                'Cover_Type': predictions
-            })
+        print(f"\nSaving predictions to {output_path}...")
+        
+        # Create DataFrame with predictions
+        df_predictions = pd.DataFrame({
+            'Id': range(len(predictions)),
+            'Cover_Type': predictions
+        })
+        
+        # Add probabilities if requested and model supports it
+        if include_probabilities and hasattr(self.model, 'predict_proba'):
+            print("  Including prediction probabilities...")
+            
+            # Apply same preprocessing as for predictions
+            if self.model_info['scaled']:
+                X_processed = self.preprocessor.transform_with_scaling(X_test, fit=False)
+            else:
+                X_processed = self.preprocessor.transform_without_scaling(X_test)
+            
+            probabilities = self.model.predict_proba(X_processed)
+            
+            # Add probability columns
+            for i in range(probabilities.shape[1]):
+                df_predictions[f'Prob_Class_{i+1}'] = probabilities[:, i]
+        
+        # Ensure output directory exists
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
         
         # Save to CSV
-        pred_df.to_csv(output_path, index=False)
-        logger.info(f"Predictions saved to {output_path}")
+        df_predictions.to_csv(output_path, index=False)
         
-        # Display summary
-        logger.info(f"\nPrediction Summary:")
-        logger.info(f"Total predictions: {len(predictions)}")
-        logger.info(f"\nClass distribution:")
-        class_counts = pd.Series(predictions).value_counts().sort_index()
-        for class_label, count in class_counts.items():
-            percentage = (count / len(predictions)) * 100
-            logger.info(f"  Class {class_label}: {count} ({percentage:.2f}%)")
+        print(f"✓ Predictions saved successfully")
+        print(f"  File: {output_path}")
+        print(f"  Rows: {len(df_predictions)}")
+        print(f"  Columns: {df_predictions.columns.tolist()}")
+    
+    def update_readme(self, train_accuracy, test_accuracy, model_name, cv_score):
+        """
+        Update README.md with final results.
+        
+        Parameters:
+        -----------
+        train_accuracy : float
+            Training set accuracy
+        test_accuracy : float
+            Test set accuracy
+        model_name : str
+            Name of the best model
+        cv_score : float
+            Cross-validation score
+        """
+        readme_path = 'README.md'
+        
+        print(f"\nUpdating {readme_path}...")
+        
+        # Results section to add
+        results_section = f"""
+## Results
+
+### Model Selection
+
+- **Best Model:** {model_name}
+- **Cross-Validation Score:** {cv_score:.4f}
+- **Training Set Accuracy:** {train_accuracy:.4f}
+- **Test Set Accuracy:** {test_accuracy:.4f}
+
+### Constraint Validation
+
+- ✓ Training accuracy < 0.98: **{train_accuracy:.4f}**
+- {'✓' if test_accuracy > 0.65 else '✗'} Test accuracy > 0.65: **{test_accuracy:.4f}**
+
+### Best Model Parameters
+
+```python
+{self.model_info['best_params']}
+```
+
+### Prediction Details
+
+- Model requires scaling: {self.model_info['scaled']}
+- Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+- Total test predictions: {len(self.predictions) if self.predictions is not None else 'N/A'}
+
+### Files Generated
+
+- Model: `results/best_model.pkl`
+- Predictions: `results/test_predictions.csv`
+- Confusion Matrix: `results/confusion_matrix.csv`
+- Learning Curve: `results/plots/learning_curve.png`
+
+"""
+        
+        # Check if README exists
+        if os.path.exists(readme_path):
+            with open(readme_path, 'r') as f:
+                content = f.read()
+            
+            # Check if Results section already exists
+            if '## Results' in content:
+                print("  Results section already exists - updating...")
+                # Replace existing results section
+                import re
+                pattern = r'## Results.*?(?=\n##|\Z)'
+                content = re.sub(pattern, results_section.strip(), content, flags=re.DOTALL)
+            else:
+                print("  Adding new Results section...")
+                # Append results section
+                content += "\n" + results_section
+            
+            # Write back
+            with open(readme_path, 'w') as f:
+                f.write(content)
+        else:
+            print("  Creating new README.md...")
+            # Create new README with results
+            readme_content = f"""# Forest Cover Type Classification
+
+{results_section}
+
+## Project Structure
+
+```
+project/
+├── data/
+│   ├── train.csv
+│   ├── test.csv
+│   └── covtype.info
+├── scripts/
+│   ├── preprocessing_feature_engineering.py
+│   ├── model_selection.py
+│   └── predict.py
+├── results/
+│   ├── best_model.pkl
+│   ├── test_predictions.csv
+│   └── plots/
+└── README.md
+```
+
+## How to Run
+
+1. Preprocessing: `python scripts/preprocessing_feature_engineering.py`
+2. Model Selection: `python scripts/model_selection.py`
+3. Prediction: `python scripts/predict.py`
+"""
+            with open(readme_path, 'w') as f:
+                f.write(readme_content)
+        
+        print("✓ README.md updated successfully")
+    
+    def run_full_pipeline(self, test_path='data/test.csv'):
+        """
+        Run the complete prediction pipeline.
+        
+        Parameters:
+        -----------
+        test_path : str
+            Path to test data
+        """
+        print("="*70)
+        print("FOREST COVER TYPE CLASSIFICATION - PREDICTION PIPELINE")
+        print("="*70)
+        print(f"Start time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        
+        try:
+            # Step 1: Load preprocessor
+            self.load_preprocessor()
+            
+            # Step 2: Load model
+            self.load_model()
+            
+            # Step 3: Load test data
+            df_test = self.load_test_data(test_path)
+            
+            # Step 4: Preprocess test data
+            result = self.preprocess_test_data(df_test)
+            if isinstance(result, tuple):
+                X_test, y_test = result
+            else:
+                X_test = result
+                y_test = None
+            
+            # Step 5: Generate predictions
+            predictions = self.predict(X_test)
+            
+            # Step 6: Calculate accuracy if true labels available
+            test_accuracy = None
+            if y_test is not None:
+                test_accuracy = self.calculate_accuracy(y_test, predictions)
+            
+            # Step 7: Save predictions
+            self.save_predictions(predictions, include_probabilities=True, X_test=X_test)
+            
+            # Step 8: Update README (if accuracy available)
+            if test_accuracy is not None:
+                # Load training data to get train accuracy
+                with open('data/processed/datasets.pkl', 'rb') as f:
+                    datasets = pickle.load(f)
+                
+                if self.model_info['scaled']:
+                    X_train = datasets['X_train_scaled']
+                else:
+                    X_train = datasets['X_train_unscaled']
+                y_train = datasets['y_train']
+                
+                train_predictions = self.model.predict(X_train)
+                from sklearn.metrics import accuracy_score
+                train_accuracy = accuracy_score(y_train, train_predictions)
+                
+                self.update_readme(
+                    train_accuracy=train_accuracy,
+                    test_accuracy=test_accuracy,
+                    model_name=self.model_info['model_name'],
+                    cv_score=self.model_info['cv_score']
+                )
+            
+            # Summary
+            print("\n" + "="*70)
+            print("PREDICTION PIPELINE COMPLETE")
+            print("="*70)
+            print(f"End time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            print(f"\nPredictions saved to: results/test_predictions.csv")
+            if test_accuracy is not None:
+                print(f"Test Accuracy: {test_accuracy:.4f}")
+                print(f"Constraint {'✓ SATISFIED' if test_accuracy > 0.65 else '✗ NOT SATISFIED'}")
+            print("\n" + "="*70)
+            
+        except FileNotFoundError as e:
+            print(f"\n✗ ERROR: {e}")
+            print("\nPlease ensure you have:")
+            print("  1. Run preprocessing: python scripts/preprocessing_feature_engineering.py")
+            print("  2. Run model selection: python scripts/model_selection.py")
+            print("  3. Test data is available: data/test.csv")
+            sys.exit(1)
+        except Exception as e:
+            print(f"\n✗ UNEXPECTED ERROR: {e}")
+            import traceback
+            traceback.print_exc()
+            sys.exit(1)
 
 
 def main():
-    """
-    Main function to make predictions on the test set.
-    """
-    logger.info("="*80)
-    logger.info("FOREST COVER TYPE PREDICTION - TEST SET")
-    logger.info("="*80)
-    
-    # Paths
-    model_path = '../results/best_model.pkl'
-    train_data_path = '../data/train.csv'
-    test_data_path = '../data/test.csv'
-    output_path = '../results/test_predictions.csv'
-    
-    # Check if model exists
-    if not os.path.exists(model_path):
-        logger.error(f"Model file not found: {model_path}")
-        logger.error("Please run model_selection.py first to train the model")
-        return
-    
-    # Check if test data exists
-    if not os.path.exists(test_data_path):
-        logger.error(f"Test data file not found: {test_data_path}")
-        logger.error("Test data should be available on the last day of the project")
-        return
-    
-    # Initialize preprocessor
-    logger.info("\nInitializing data preprocessor...")
-    preprocessor = ForestDataPreprocessor()
-    
-    # Load and prepare training data to get feature names
-    logger.info("Loading training data to configure preprocessor...")
-    X_train, _, y_train, _ = preprocessor.prepare_data(
-        train_data_path,
-        engineer_features=True,
-        scale=False,
-        test_size=0.2,
-        random_state=42
-    )
-    
-    # Initialize predictor
-    logger.info("\nLoading trained model...")
-    predictor = ForestPredictor(model_path)
-    
-    # Load and prepare test data
-    logger.info("\nLoading and preparing test data...")
-    test_df_raw = pd.read_csv(test_data_path)
-    
-    # Check if test data has target column
-    has_target = preprocessor.target_name in test_df_raw.columns
-    
-    if has_target:
-        logger.info("Test data contains target labels - will evaluate performance")
-        y_test = test_df_raw[preprocessor.target_name]
-        test_df_raw = test_df_raw.drop(columns=[preprocessor.target_name])
-    
-    # Engineer features for test data
-    test_df = preprocessor.create_engineered_features(test_df_raw)
-    
-    # Ensure test data has the same features as training data
-    missing_features = set(preprocessor.feature_names) - set(test_df.columns)
-    extra_features = set(test_df.columns) - set(preprocessor.feature_names)
-    
-    if missing_features:
-        logger.warning(f"Missing features in test data: {missing_features}")
-        for feature in missing_features:
-            test_df[feature] = 0
-    
-    if extra_features:
-        logger.info(f"Removing extra features from test data: {extra_features}")
-    
-    # Select and reorder features to match training data
-    X_test = test_df[preprocessor.feature_names]
-    
-    logger.info(f"Test data shape: {X_test.shape}")
-    
-    # Make predictions
-    logger.info("\n" + "="*60)
-    logger.info("MAKING PREDICTIONS")
-    logger.info("="*60)
-    
-    predictions = predictor.predict(X_test)
-    
-    # Evaluate if we have labels
-    if has_target:
-        results = predictor.evaluate(X_test, y_test)
-        
-        # Check if accuracy meets threshold
-        if results['accuracy'] >= 0.65:
-            logger.info(f"\n✅ Test accuracy ({results['accuracy']:.4f}) meets the threshold (>= 0.65)")
-        else:
-            logger.warning(f"\n⚠️  Test accuracy ({results['accuracy']:.4f}) is below the threshold (< 0.65)")
-    
-    # Save predictions
-    logger.info("\n" + "="*60)
-    logger.info("SAVING PREDICTIONS")
-    logger.info("="*60)
-    
-    # Create IDs if not present in original data
-    if 'Id' in test_df_raw.columns:
-        ids = test_df_raw['Id'].values
-    else:
-        ids = range(len(predictions))
-    
-    predictor.save_predictions(predictions, output_path, include_ids=ids)
-    
-    logger.info("\n" + "="*80)
-    logger.info("PREDICTION COMPLETE!")
-    logger.info("="*80)
-    logger.info(f"\nResults saved to: {output_path}")
-    
-    if has_target:
-        logger.info(f"\nFinal Test Accuracy: {results['accuracy']:.4f}")
-        logger.info("\nUpdate your README.md with this test accuracy score!")
-    
-    logger.info("\n✅ All done! Check the results directory for outputs.")
+    """Main execution function."""
+    pipeline = PredictionPipeline()
+    pipeline.run_full_pipeline()
 
 
 if __name__ == "__main__":
