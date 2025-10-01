@@ -1,9 +1,11 @@
-name: env
+name: ex00
 channels:
   - defaults
 dependencies:
-  - python=3.9
-  - jupyterlab
+  - python=3.8
+  - jupyter
   - numpy
-  - pandas
-prefix: /home/joe/anaconda3/envs/env
+  - scikit-learn
+  - matplotlib
+  - seaborn
+prefix: /home/joe/anaconda3/envs/ex00
