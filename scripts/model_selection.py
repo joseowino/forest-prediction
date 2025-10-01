@@ -560,12 +560,12 @@ def main():
     with open('data/processed/datasets.pkl', 'rb') as f:
         datasets = pickle.load(f)
     
-    X_train_scaled = datasets['X_train_scaled']
-    X_val_scaled = datasets['X_val_scaled']
-    X_train_unscaled = datasets['X_train_unscaled']
-    X_val_unscaled = datasets['X_val_unscaled']
-    y_train = datasets['y_train']
-    y_val = datasets['y_val']
+    X_train_scaled = datasets['X_train_scaled'].copy()
+    X_val_scaled = datasets['X_val_scaled'].copy()
+    X_train_unscaled = datasets['X_train_unscaled'].copy()
+    X_val_unscaled = datasets['X_val_unscaled'].copy()
+    y_train = datasets['y_train'].copy()
+    y_val = datasets['y_val'].copy()
     
     print(f"✓ Data loaded successfully")
     print(f"  Training samples: {len(y_train)}")
